@@ -84,7 +84,7 @@ def main(args):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--llm", type=str, default="gpt-4o")
-    parser.add_argument("--input_path", type=str, default=os.path.join(os.path.abspath(os.path.dirname(__file__)), "research_goal.txt"))
+    parser.add_argument("--input_path", type=str, default=os.path.join(os.path.abspath(os.path.dirname(__file__)), "research_goal_sample.txt"))
     parser.add_argument("--save_path", type=str, default=os.path.join(os.path.abspath(os.path.dirname(__file__)), "results"))
     parser.add_argument("--log_path", type=str, default=os.path.join(os.path.abspath(os.path.dirname(__file__)), "logs"))
     parser.add_argument("--temperature", type=int, default=0)
