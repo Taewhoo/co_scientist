@@ -62,7 +62,7 @@ Termination condition:
 Your Turn:\
 """
 
-def retrieve_and_reasoner(llm, goal): # to be updated if deep research is available via API
+def retrieve_and_reasoner(llm, goal, articles_with_reasoning_path): # to be updated if deep research is available via API
     instruction = """
     Given a specific research goal, search the web for relevant and credible articles that contribute to achieving or addressing that goal. For each article you select, provide a reasoning that explains in detail how the article supports, informs, or relates to the research goal. The reasoning should reference specific elements of the article (e.g., findings, arguments, data, or methodology) and clearly articulate the connection to the research objective. 
     Return a list of (article, reasoning) pairs in reverse chronological order, beginning with the most recent analysis or publication. Each reasoning should demonstrate a thoughtful and well-supported link between the article’s content and the research goal.
@@ -76,7 +76,7 @@ def retrieve_and_reasoner(llm, goal): # to be updated if deep research is availa
     """
 
     ## tmp (web)
-    with open("/home/taewhoo/aigen/hypothesis/articles_with_reasoning.txt") as rf:
+    with open(articles_with_reasoning_path) as rf:
         articles_with_reasoning = rf.read()
 
     return articles_with_reasoning

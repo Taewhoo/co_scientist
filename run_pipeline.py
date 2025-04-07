@@ -32,7 +32,7 @@ def main(args):
     while FINISH==False:
         # 1. generation agent
         print(f"Generation agent ...\n##########################################")
-        articles_with_reasoning = retrieve_and_reasoner(llm, research_goal) # need update (deep research API)
+        articles_with_reasoning = retrieve_and_reasoner(llm, research_goal, args.articles_with_reasoning_path) # need update (deep research API)
         source_hypothesis = "" if len(visited_hyp_list) == 0 else visited_hyp_list[-1]
         explorator_hyp = explorator(llm, research_goal, research_plan_config["Preferences"], source_hypothesis, articles_with_reasoning)
         # debate_simulator_hyp = debate_simulator(llm, research_plan_config["Attributes"], research_goal, research_plan_config["Preferences"], reviews_overview, "") # transcript is updated in multi-turn debate
@@ -78,13 +78,14 @@ def main(args):
             print("Inappropriate initial review, aborting...")
             FINISH=True
 
-    
+
 
 
 if __name__ == "__main__":
     parser = argparse.ArgumentParser()
     parser.add_argument("--llm", type=str, default="gpt-4o")
     parser.add_argument("--input_path", type=str, default=os.path.join(os.path.abspath(os.path.dirname(__file__)), "research_goal_sample.txt"))
+    parser.add_argument("--articles_with_reasoning_path", type=str, default=os.path.join(os.path.abspath(os.path.dirname(__file__)), "articles_with_reasoning_sample.txt"))
     parser.add_argument("--save_path", type=str, default=os.path.join(os.path.abspath(os.path.dirname(__file__)), "results"))
     parser.add_argument("--log_path", type=str, default=os.path.join(os.path.abspath(os.path.dirname(__file__)), "logs"))
     parser.add_argument("--temperature", type=int, default=0)
