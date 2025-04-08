@@ -154,8 +154,20 @@ def deep_reviewer(llm, hypothesis):
     llm_result = llm.chat(input_messages) # no return format for now
     return llm_result
 
-def observation_reviewer(llm, articles_from_full_review):
-    return
+def observation_reviewer(llm, generated_hypothesis, articles_from_full_review):
+    observation_review_input = observation_review_prompt.format(article=articles_from_full_review, hypothesis=generated_hypothesis)
+    input_messages = [
+        {
+            "role": "system",
+            "content": system_prompt
+        },
+        {
+            "role": "user",
+            "content": observation_review_input
+        }
+    ]
+    llm_result = llm.chat(input_messages) # no return format for now
+    return llm_result
 
 def simulation_reviewer(llm, hypothesis):
     simulation_review_input = simulation_review_prompt.format(hypothesis=hypothesis)
