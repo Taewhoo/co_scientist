@@ -1,6 +1,20 @@
-# from tavily import TavilyClient
-
-# tavily_client = TavilyClient()
+import re
+import pubmed_parser as pp
+import torch
+from sqlalchemy import (
+    ARRAY,
+    Boolean,
+    Column,
+    Integer,
+    ForeignKey,
+    Float,
+    String,
+    create_engine,
+    func,
+)
+from sqlalchemy.ext.declarative import declarative_base
+from sqlalchemy.orm import sessionmaker, relationship
+from transformers import AutoTokenizer, AutoModelForSequenceClassification
 
 hyp_gen_prompt = """\
 Describe the proposed hypothesis in detail, including specific entities, mechanisms, and anticipated outcomes.
@@ -81,6 +95,112 @@ def retrieve_and_reasoner(llm, goal, articles_with_reasoning_path): # to be upda
 
     return articles_with_reasoning
 
+def retrieve_from_db(goal, top_k):
+
+    # load model for reranker
+    tokenizer = AutoTokenizer.from_pretrained("ncbi/MedCPT-Cross-Encoder")
+    model = AutoModelForSequenceClassification.from_pretrained("ncbi/MedCPT-Cross-Encoder")
+    model = model.eval().cuda().requires_grad_(False)
+
+    # class & functions
+    Base = declarative_base()
+
+    class JournalImpactFactor(Base):
+        __tablename__ = "journal_impact_factors"
+
+        id = Column(Integer, primary_key=True, autoincrement=True)
+        issn_linking = Column(String, unique=True, index=True, nullable=False)
+        impact_factor = Column(Float)
+
+    class PubMedArticle(Base):
+        __tablename__ = "pubmed_articles"
+        pmid = Column(Integer, primary_key=True, nullable=False)
+        pmc_id = Column(String)
+        pmc_type = Column(String)
+        doi = Column(String)
+        title = Column(String)
+        abstract = Column(String)
+        authors = Column(ARRAY(String))
+        mesh_terms = Column(ARRAY(String))
+        publication_types = Column(ARRAY(String))
+        keywords = Column(ARRAY(String))
+        chemical_list = Column(ARRAY(String))
+        pubdate = Column(Integer)
+        journal = Column(String)
+        medline_ta = Column(String)
+        nlm_unique_id = Column(String)
+        issn_linking = Column(String)
+        country = Column(String)
+        references = Column(ARRAY(Integer))
+        delete = Column(Boolean)
+        languages = Column(ARRAY(String))
+        vernacular_title = Column(String)
+
+        journal_metrics = relationship(
+            "JournalImpactFactor",
+            primaryjoin="PubMedArticle.issn_linking == JournalImpactFactor.issn_linking",
+            foreign_keys=[issn_linking],
+            uselist=False,
+        )
+
+        @property
+        def impact_factor(self):
+            return self.journal_metrics.impact_factor if self.journal_metrics else None
+
+    class PubMedChunk(Base):
+        __tablename__ = "pubmed_chunks"
+
+        id = Column(Integer, primary_key=True, autoincrement=True)
+        pmid = Column(Integer, ForeignKey("pubmed_articles.pmid"), nullable=False)
+        chunk_index = Column(Integer, nullable=False)
+        chunk_text = Column(String, nullable=False)
+
+        article_relation = relationship("PubMedArticle", foreign_keys=[pmid], uselist=False)
+
+        @property
+        def article(self):
+            return self.article_relation
+        
+    def sanitize_text(text: str) -> str:
+        cleaned_text = re.sub(r"[^\w\s]", " ", text)
+        cleaned_text = re.sub(r"\s+", " ", cleaned_text).strip()
+        return cleaned_text
+
+    def retrieve_chunks(text: str, limit: int = 1000) -> list[PubMedChunk]:
+        return (
+            session.query(func.paradedb.score(PubMedChunk.id).label("score"), PubMedChunk)
+            .filter(PubMedChunk.chunk_text.op("@@@")(sanitize_text(text)))
+            .order_by(func.paradedb.score(PubMedChunk.id).desc())
+            .limit(limit)
+            .all()
+        )
+
+    def find_article_by_pmid(pmid: int) -> PubMedArticle:
+        return session.query(PubMedArticle).where(PubMedArticle.pmid == pmid).one()
+    
+    # retrieve & rerank
+    engine = create_engine("postgresql://user:1234@localhost/pubmed_refdb")
+    Base.metadata.create_all(engine)
+    session = sessionmaker(autoflush=True, bind=engine)()
+
+    chunks = retrieve_chunks(goal)
+    encoded = tokenizer(
+        [[goal, chunk.chunk_text] for _, chunk in chunks],
+        truncation=True,
+        padding=True,
+        return_tensors="pt",
+        max_length=512,
+    )
+    logits = model(**encoded.to("cuda")).logits.squeeze(dim=1)
+    reranking_indices = logits.argsort(descending=True).cpu().numpy()
+
+    topk_texts = []
+    for i in reranking_indices[:top_k]:
+        score, chunk = chunks[i]
+        topk_texts.append(chunk.chunk_text)
+    
+    return topk_texts
+
 def explorator(llm, goal, preferences, source_hypothesis, articles_with_reasoning):
     system_prompt = "You are an expert tasked with formulating a novel and robust hypothesis to address the following objective."
     hyp_gen_input = hyp_gen_prompt.format(goal=goal, preferences=preferences, source_hypothesis=source_hypothesis, articles_with_reasoning=articles_with_reasoning)
@@ -97,9 +217,41 @@ def explorator(llm, goal, preferences, source_hypothesis, articles_with_reasonin
     llm_result = llm.chat(input_messages) # no return format for now
     return llm_result
 
-def debate_simulator(llm, attributes, goal, preferences, reviews_overview):
+def debate_simulator(llm, attributes, goal, preferences, reviews_overview, max_turns):
+    system_prompt = "You are an expert tasked with developing and refining a scientific hypothesis."
     transcript = "" # updated with iteration
-    return
+    final_hypothesis = None
+
+    for turn in range(1, max_turns + 1):
+        # Fill in the transcript into the static prompt template
+        prompt_input = scientific_debate_prompt.format(
+            idea_attributes=attributes,
+            goal=goal,
+            preferences=preferences,
+            reviews_overview=reviews_overview,
+            transcript=transcript.strip()
+        )
+        input_messages = [
+            {
+                "role": "system",
+                "content": system_prompt
+            },
+            {
+                "role": "user",
+                "content": prompt_input
+            }
+        ]
+        # Call the LLM
+        llm_result = llm.chat(input_messages)
+        transcript += f"\n[Expert {turn}]: {llm_result}\n"
+
+        # Check for termination
+        if "HYPOTHESIS" in llm_result:
+            final_hypothesis = llm_result.split("HYPOTHESIS", 1)[-1].strip()
+            break
+    
+    print(f"debate simulator transcript : {transcript.strip()}")
+    return final_hypothesis
 
 def assumption_identifier(llm, goal):
     return
