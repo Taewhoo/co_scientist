@@ -1,0 +1,4 @@
+openai==1.71.0
+psycopg2-binary
+pubmed-parser
+transformers==4.51.0
