@@ -31,9 +31,10 @@ def get_llm(llm_name):
     }[llm_name]
 
 class StructuredLLM:
-    def __init__(self, llm_name='gpt-4o'):
+    def __init__(self, llm_name='gpt-4o', temperature=0):
         self.llm_name = llm_name
         self.llm_model = get_llm(llm_name)
+        self.temperature = temperature
     
     def wrap_messages(self, messages):
         if self.llm_name == 'gpt-o1': # o1 does not support system prompt
@@ -44,7 +45,7 @@ class StructuredLLM:
     def chat(self, messages, return_format: BaseModel=None):
         messages = self.wrap_messages(messages)
         if not return_format:
-            return self.llm_model.invoke(messages).content
+            return self.llm_model.invoke(messages, self.temperature).content
 
         if self.llm_name in [
             'gpt-o1', 'vllm-gpt_reformat'

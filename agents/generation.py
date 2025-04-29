@@ -15,6 +15,7 @@ from sqlalchemy import (
 from sqlalchemy.ext.declarative import declarative_base
 from sqlalchemy.orm import sessionmaker, relationship
 from transformers import AutoTokenizer, AutoModelForSequenceClassification
+import uuid
 
 hyp_gen_prompt = """\
 Describe the proposed hypothesis in detail, including specific entities, mechanisms, and anticipated outcomes.
@@ -35,7 +36,7 @@ Literature review and analytical rationale (chronologically ordered, beginning w
 
 {articles_with_reasoning}
 
-Proposed hypothesis (detailed description for domain experts):\
+Proposed hypothesis in square brackets (i.e., [HYPOTHESIS: ...]), followed by a detailed description for domain experts:\
 """
 scientific_debate_prompt = """\
 You are an expert participating in a collaborative discourse concerning the generation of a {idea_attributes} hypothesis. You will engage in a simulated discussion with other experts. The overarching objective of this discourse is to collaboratively develop a {idea_attributes} hypothesis.
@@ -76,6 +77,11 @@ Termination condition:
 Your Turn:\
 """
 
+def extract_main_hypothesis(text):
+    pattern = r"\[\s*hypothesis\s*:\s*(.*?)\s*\]"
+    match = re.search(pattern, text, re.IGNORECASE | re.DOTALL)
+    return match.group(1).strip() if match else None
+
 def retrieve_and_reasoner(llm, goal, articles_with_reasoning_path): # to be updated if deep research is available via API
     instruction = """
     Given a specific research goal, search the web for relevant and credible articles that contribute to achieving or addressing that goal. For each article you select, provide a reasoning that explains in detail how the article supports, informs, or relates to the research goal. The reasoning should reference specific elements of the article (e.g., findings, arguments, data, or methodology) and clearly articulate the connection to the research objective. 
@@ -97,10 +103,10 @@ def retrieve_and_reasoner(llm, goal, articles_with_reasoning_path): # to be upda
 
 def retrieve_from_db(goal, top_k):
 
-    # load model for reranker
-    tokenizer = AutoTokenizer.from_pretrained("ncbi/MedCPT-Cross-Encoder")
-    model = AutoModelForSequenceClassification.from_pretrained("ncbi/MedCPT-Cross-Encoder")
-    model = model.eval().cuda().requires_grad_(False)
+    # # load model for reranker
+    # tokenizer = AutoTokenizer.from_pretrained("ncbi/MedCPT-Cross-Encoder")
+    # model = AutoModelForSequenceClassification.from_pretrained("ncbi/MedCPT-Cross-Encoder")
+    # model = model.eval().cuda().requires_grad_(False)
 
     # class & functions
     Base = declarative_base()
@@ -184,24 +190,32 @@ def retrieve_from_db(goal, top_k):
     session = sessionmaker(autoflush=True, bind=engine)()
 
     chunks = retrieve_chunks(goal)
-    encoded = tokenizer(
-        [[goal, chunk.chunk_text] for _, chunk in chunks],
-        truncation=True,
-        padding=True,
-        return_tensors="pt",
-        max_length=512,
-    )
-    logits = model(**encoded.to("cuda")).logits.squeeze(dim=1)
-    reranking_indices = logits.argsort(descending=True).cpu().numpy()
+    # encoded = tokenizer(
+    #     [[goal, chunk.chunk_text] for _, chunk in chunks],
+    #     truncation=True,
+    #     padding=True,
+    #     return_tensors="pt",
+    #     max_length=512,
+    # )
+    # logits = model(**encoded.to("cuda")).logits.squeeze(dim=1)
+    # reranking_indices = logits.argsort(descending=True).cpu().numpy()
 
     topk_texts = []
-    for i in reranking_indices[:top_k]:
-        score, chunk = chunks[i]
-        topk_texts.append(chunk.chunk_text)
+
+    ### with reranking
+    # for i in reranking_indices[:top_k]:
+    #     score, chunk = chunks[i]
+    #     topk_texts.append(chunk.chunk_text)
+
+    ### without reranking
+    for chunk in chunks[:top_k]:
+        topk_texts.append(chunk[1].chunk_text)
     
     return topk_texts
 
-def explorator(llm, goal, preferences, source_hypothesis, articles_with_reasoning):
+def explorator(llm, goal, preferences, source_hypothesis, articles_with_reasoning, num_init_hyp):
+    
+    results = []
     system_prompt = "You are an expert tasked with formulating a novel and robust hypothesis to address the following objective."
     hyp_gen_input = hyp_gen_prompt.format(goal=goal, preferences=preferences, source_hypothesis=source_hypothesis, articles_with_reasoning=articles_with_reasoning)
     input_messages = [
@@ -214,44 +228,66 @@ def explorator(llm, goal, preferences, source_hypothesis, articles_with_reasonin
             "content": hyp_gen_input
         }
     ]
-    llm_result = llm.chat(input_messages) # no return format for now
-    return llm_result
 
-def debate_simulator(llm, attributes, goal, preferences, reviews_overview, max_turns):
+    for _ in range(num_init_hyp):
+        llm_result = llm.chat(input_messages) # no return format for now
+        main_hypothesis = extract_main_hypothesis(llm_result)
+        results.append({
+            "id_": str(uuid.uuid4()),
+            "hyp_full": llm_result,
+            "hyp_main": main_hypothesis
+        })
+
+    return results
+
+def debate_simulator(llm, attributes, goal, preferences, hyp_after_meta_review, max_turns):
+
+    results = []
     system_prompt = "You are an expert tasked with developing and refining a scientific hypothesis."
-    transcript = "" # updated with iteration
-    final_hypothesis = None
 
-    for turn in range(1, max_turns + 1):
-        # Fill in the transcript into the static prompt template
-        prompt_input = scientific_debate_prompt.format(
-            idea_attributes=attributes,
-            goal=goal,
-            preferences=preferences,
-            reviews_overview=reviews_overview,
-            transcript=transcript.strip()
-        )
-        input_messages = [
-            {
-                "role": "system",
-                "content": system_prompt
-            },
-            {
-                "role": "user",
-                "content": prompt_input
-            }
-        ]
-        # Call the LLM
-        llm_result = llm.chat(input_messages)
-        transcript += f"\n[Expert {turn}]: {llm_result}\n"
+    for hyp_dict in hyp_after_meta_review:
+        
+        transcript = "" # updated with iteration
+        reviews_overview = hyp_dict["meta_review"]
+        prev_hyp_id = hyp_dict["id_"]
+        final_hypothesis = None
 
-        # Check for termination
-        if "HYPOTHESIS" in llm_result:
-            final_hypothesis = llm_result.split("HYPOTHESIS", 1)[-1].strip()
-            break
-    
-    print(f"debate simulator transcript : {transcript.strip()}")
-    return final_hypothesis
+        for turn in range(1, max_turns + 1):
+            # Fill in the transcript into the static prompt template
+            prompt_input = scientific_debate_prompt.format(
+                idea_attributes=attributes,
+                goal=goal,
+                preferences=preferences,
+                reviews_overview=reviews_overview,
+                transcript=transcript.strip()
+            )
+            input_messages = [
+                {
+                    "role": "system",
+                    "content": system_prompt
+                },
+                {
+                    "role": "user",
+                    "content": prompt_input
+                }
+            ]
+            # Call the LLM
+            llm_result = llm.chat(input_messages)
+            transcript += f"\n[Expert {turn}]: {llm_result}\n"
+
+            # Check for termination
+            if "HYPOTHESIS" in llm_result:
+                final_hypothesis = llm_result.split("HYPOTHESIS", 1)[-1].strip()
+                break
+        
+        results.append({
+            "id_": str(uuid.uuid4()),
+            "hyp_full": final_hypothesis,
+            "hyp_main": final_hypothesis, # assume that debate_simulator returns clean hypothesis
+            "prev_id": prev_hyp_id
+        })
+
+    return results
 
 def assumption_identifier(llm, goal):
     return
