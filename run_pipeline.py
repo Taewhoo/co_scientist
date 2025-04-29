@@ -1,6 +1,9 @@
 import argparse
 import os
 os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+from api_config import API_CONFIG
+for key, api_list in API_CONFIG.items():
+    os.environ[key] = api_list[0]
 from openai import OpenAI
 from models import StructuredLLM
 from agents.generation import retrieve_and_reasoner, retrieve_from_db, explorator, debate_simulator, assumption_identifier, research_expander 
@@ -10,9 +13,6 @@ from agents.ranking import elo_tournament
 from agents.evolution import evolve_hypotheses
 from agents.meta_review import metareview_generator
 
-from api_config import API_CONFIG
-for key, api_list in API_CONFIG.items():
-    os.environ[key] = api_list[0]
 import json
 import time
 
